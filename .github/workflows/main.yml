@@ -4,8 +4,13 @@ on:
   workflow_dispatch:
     inputs:
 
+      github_token:
+        description: "GitHub Personal Access Token with access to both repositories"
+        required: true
+        type: string
+
       phase1_repo:
-        description: "Phase 1 repository"
+        description: "Phase 1 source repository"
         required: true
         type: string
 
@@ -15,7 +20,7 @@ on:
         type: string
 
       phase2_repo:
-        description: "Phase 2 repository"
+        description: "Phase 2 target repository"
         required: true
         type: string
 
@@ -25,7 +30,7 @@ on:
         type: string
 
       sync_branch:
-        description: "Temporary synchronization branch name"
+        description: "Branch to create in Phase 2 repository"
         required: true
         type: string
 
@@ -39,85 +44,345 @@ on:
         required: false
         type: string
 
+
 jobs:
 
   sync:
     name: Sync Phase 1 → Phase 2
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-      pull-requests: write
-
     steps:
 
+      # ==========================================================
+      # 1. Validate inputs
+      # ==========================================================
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -e
+
+          echo "Validating inputs..."
+
+          if [ -z "${{ inputs.github_token }}" ]; then
+            echo "ERROR: GitHub token is required."
+            exit 1
+          fi
+
+          if [ -z "${{ inputs.phase1_repo }}" ]; then
+            echo "ERROR: Phase 1 repository is required."
+            exit 1
+          fi
+
+          if [ -z "${{ inputs.phase1_branch }}" ]; then
+            echo "ERROR: Phase 1 branch is required."
+            exit 1
+          fi
+
+          if [ -z "${{ inputs.phase2_repo }}" ]; then
+            echo "ERROR: Phase 2 repository is required."
+            exit 1
+          fi
+
+          if [ -z "${{ inputs.phase2_branch }}" ]; then
+            echo "ERROR: Phase 2 branch is required."
+            exit 1
+          fi
+
+          if [ -z "${{ inputs.sync_branch }}" ]; then
+            echo "ERROR: Sync branch is required."
+            exit 1
+          fi
+
+          if [ -z "${{ inputs.pr_title }}" ]; then
+            echo "ERROR: PR title is required."
+            exit 1
+          fi
+
+          echo "Input validation completed."
+
+
+      # ==========================================================
+      # 2. Display synchronization information
+      # ==========================================================
+
       - name: Display synchronization details
+        shell: bash
         run: |
-          echo "=========================================="
-          echo "Phase 1 Repository : ${{ inputs.phase1_repo }}"
-          echo "Phase 1 Branch     : ${{ inputs.phase1_branch }}"
+          echo "=================================================="
+          echo "        PHASE 1 → PHASE 2 SYNCHRONIZATION"
+          echo "=================================================="
           echo ""
-          echo "Phase 2 Repository : ${{ inputs.phase2_repo }}"
-          echo "Phase 2 Branch     : ${{ inputs.phase2_branch }}"
+          echo "Source Repository : ${{ inputs.phase1_repo }}"
+          echo "Source Branch     : ${{ inputs.phase1_branch }}"
           echo ""
-          echo "Sync Branch        : ${{ inputs.sync_branch }}"
-          echo "PR Title           : ${{ inputs.pr_title }}"
-          echo "=========================================="
+          echo "Target Repository : ${{ inputs.phase2_repo }}"
+          echo "Target Branch     : ${{ inputs.phase2_branch }}"
+          echo ""
+          echo "Sync Branch       : ${{ inputs.sync_branch }}"
+          echo ""
+          echo "PR Title          : ${{ inputs.pr_title }}"
+          echo ""
+          echo "=================================================="
 
-      - name: Checkout Phase 2 repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/${{ inputs.phase2_repo }}
-          ref: ${{ inputs.phase2_branch }}
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure Git
+      # ==========================================================
+      # 3. Configure Git authentication
+      # ==========================================================
+
+      - name: Configure Git authentication
+        shell: bash
+        env:
+          GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -e
 
-      - name: Add Phase 1 repository
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git config --global credential.helper store
+
+          printf "https://x-access-token:%s@github.com\n" "$GITHUB_TOKEN_INPUT" \
+            > "$HOME/.git-credentials"
+
+          chmod 600 "$HOME/.git-credentials"
+
+          echo "Git authentication configured."
+
+
+      # ==========================================================
+      # 4. Clone target Phase 2 repository
+      # ==========================================================
+
+      - name: Clone Phase 2 repository
+        shell: bash
         run: |
-          git remote add phase1 \
-            https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository_owner }}/${{ inputs.phase1_repo }}.git
+          set -e
 
-          git fetch phase1 "${{ inputs.phase1_branch }}"
+          rm -rf target-repo
+
+          git clone \
+            --branch "${{ inputs.phase2_branch }}" \
+            --single-branch \
+            "https://github.com/${{ github.repository_owner }}/${{ inputs.phase2_repo }}.git" \
+            target-repo
+
+          cd target-repo
+
+          git fetch --all --tags
+
+          echo "Target repository cloned."
+
+
+      # ==========================================================
+      # 5. Clone source Phase 1 repository
+      # ==========================================================
+
+      - name: Clone Phase 1 repository
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf source-repo
+
+          git clone \
+            --branch "${{ inputs.phase1_branch }}" \
+            --single-branch \
+            "https://github.com/${{ github.repository_owner }}/${{ inputs.phase1_repo }}.git" \
+            source-repo
+
+          cd source-repo
+
+          git fetch --all --tags
+
+          echo "Source repository cloned."
+
+
+      # ==========================================================
+      # 6. Create synchronization branch in Phase 2
+      # ==========================================================
 
       - name: Create synchronization branch
+        shell: bash
         run: |
+          set -e
+
+          cd target-repo
+
           git checkout -b "${{ inputs.sync_branch }}"
 
-      - name: Merge Phase 1 into Phase 2
+          echo ""
+          echo "Synchronization branch created:"
+          git branch --show-current
+
+
+      # ==========================================================
+      # 7. Synchronize source files
+      #
+      # IMPORTANT:
+      # No git merge is performed.
+      #
+      # Source repository files are copied into the target
+      # synchronization branch.
+      # ==========================================================
+
+      - name: Copy Phase 1 files into Phase 2
+        shell: bash
         run: |
-          git merge \
-            "phase1/${{ inputs.phase1_branch }}" \
-            --no-ff \
+          set -e
+
+          echo "=================================================="
+          echo "Copying Phase 1 files into Phase 2"
+          echo "=================================================="
+
+          rsync -av \
+            --exclude='.git' \
+            source-repo/ \
+            target-repo/
+
+          echo ""
+          echo "Files copied successfully."
+
+
+      # ==========================================================
+      # 8. Show changes
+      # ==========================================================
+
+      - name: Show synchronization changes
+        shell: bash
+        run: |
+          set -e
+
+          cd target-repo
+
+          echo "=================================================="
+          echo "CHANGES TO BE INCLUDED IN PR"
+          echo "=================================================="
+
+          git status --short
+
+          echo ""
+          echo "Changed files:"
+          git diff --name-status
+
+
+      # ==========================================================
+      # 9. Check whether there are changes
+      # ==========================================================
+
+      - name: Check for changes
+        id: changes
+        shell: bash
+        run: |
+          cd target-repo
+
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+
+            echo ""
+            echo "No changes detected."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+
+            echo ""
+            echo "Changes detected."
+          fi
+
+
+      # ==========================================================
+      # 10. Commit synchronization changes
+      # ==========================================================
+
+      - name: Commit synchronization changes
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -e
+
+          cd target-repo
+
+          git add -A
+
+          git commit \
             -m "Sync Phase 1 into Phase 2"
 
+          echo "Synchronization changes committed."
+
+
+      # ==========================================================
+      # 11. Push synchronization branch
+      # ==========================================================
+
       - name: Push synchronization branch
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
         run: |
-          git push origin "${{ inputs.sync_branch }}"
+          set -e
+
+          cd target-repo
+
+          git push \
+            origin \
+            "${{ inputs.sync_branch }}"
+
+          echo "Synchronization branch pushed successfully."
+
+
+      # ==========================================================
+      # 12. Create Pull Request
+      # ==========================================================
 
       - name: Create Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ inputs.github_token }}
         run: |
-          gh pr create \
+          set -e
+
+          cd target-repo
+
+          PR_URL=$(gh pr create \
             --repo "${{ github.repository_owner }}/${{ inputs.phase2_repo }}" \
             --base "${{ inputs.phase2_branch }}" \
             --head "${{ inputs.sync_branch }}" \
             --title "${{ inputs.pr_title }}" \
-            --body "${{ inputs.pr_description }}"
+            --body "${{ inputs.pr_description }}")
 
-      - name: Summary
+          echo ""
+          echo "=================================================="
+          echo "PULL REQUEST CREATED"
+          echo "=================================================="
+          echo ""
+          echo "$PR_URL"
+          echo ""
+
+
+      # ==========================================================
+      # 13. No changes
+      # ==========================================================
+
+      - name: No changes detected
+        if: steps.changes.outputs.changed == 'false'
         run: |
-          echo "=========================================="
-          echo "SYNC COMPLETED"
-          echo "=========================================="
-          echo "Source Repository : ${{ inputs.phase1_repo }}"
-          echo "Source Branch     : ${{ inputs.phase1_branch }}"
-          echo "Target Repository : ${{ inputs.phase2_repo }}"
-          echo "Target Branch     : ${{ inputs.phase2_branch }}"
-          echo "Sync Branch       : ${{ inputs.sync_branch }}"
-          echo "=========================================="
+          echo "=================================================="
+          echo "NO CHANGES"
+          echo "=================================================="
+          echo ""
+          echo "Phase 1 and Phase 2 currently have the same files."
+          echo "No Pull Request was created."
+
+
+      # ==========================================================
+      # 14. Cleanup credentials
+      # ==========================================================
+
+      - name: Cleanup credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$HOME/.git-credentials"
+
+          git config --global --unset credential.helper || true
+
+          echo "Git credentials cleaned up."
