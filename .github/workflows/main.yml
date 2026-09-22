@@ -5,28 +5,29 @@ on:
     inputs:
 
       github_token:
-        description: "GitHub Personal Access Token with access to source and target repositories"
+        description: "GitHub Personal Access Token with access to both repositories"
         required: true
         type: string
 
       source_branch:
-        description: "Source branch (example: main, master, or feature/xyz)"
+        description: "Source branch. Example: main, master, feature/xyz"
         required: true
         default: "main"
         type: string
 
       target_repo:
-        description: "Target Phase 2 repository (example: setup-single-family-activations-p2-ui)"
+        description: "Target Phase 2 repository. Example: setup-single-family-activations-p2-ui"
         required: true
         type: string
 
       target_branch:
-        description: "Target Phase 2 branch"
+        description: "Target branch. Example: main"
         required: true
+        default: "main"
         type: string
 
       sync_branch:
-        description: "Branch to create in target repository"
+        description: "New synchronization branch in target repository"
         required: true
         type: string
 
@@ -58,7 +59,9 @@ jobs:
         run: |
           set -e
 
-          echo "Validating inputs..."
+          echo "=================================================="
+          echo "VALIDATING INPUTS"
+          echo "=================================================="
 
           if [ -z "${{ inputs.github_token }}" ]; then
             echo "ERROR: GitHub token is required."
@@ -81,12 +84,12 @@ jobs:
           fi
 
           if [ -z "${{ inputs.sync_branch }}" ]; then
-            echo "ERROR: Sync branch is required."
+            echo "ERROR: Synchronization branch is required."
             exit 1
           fi
 
           if [ -z "${{ inputs.pr_title }}" ]; then
-            echo "ERROR: PR title is required."
+            echo "ERROR: Pull Request title is required."
             exit 1
           fi
 
@@ -94,7 +97,9 @@ jobs:
 
 
       # ==========================================================
-      # 2. Determine source and target repositories
+      # 2. Determine repositories
+      #
+      # Source repository is automatically the current repository.
       # ==========================================================
 
       - name: Determine repositories
@@ -115,13 +120,25 @@ jobs:
           echo "source_repo=$SOURCE_REPO" >> "$GITHUB_OUTPUT"
           echo "target_repo=$TARGET_REPO" >> "$GITHUB_OUTPUT"
 
-          echo "=============================================="
+          echo ""
+          echo "=================================================="
+          echo "REPOSITORY CONFIGURATION"
+          echo "=================================================="
+          echo ""
           echo "Source Repository : $SOURCE_REPO"
           echo "Source Branch     : ${{ inputs.source_branch }}"
           echo ""
           echo "Target Repository : $TARGET_REPO"
           echo "Target Branch     : ${{ inputs.target_branch }}"
-          echo "=============================================="
+          echo ""
+          echo "Sync Branch       : ${{ inputs.sync_branch }}"
+          echo ""
+          echo "Ignored:"
+          echo "  .github/"
+          echo "  .stratus/"
+          echo "  .git/"
+          echo ""
+          echo "=================================================="
 
 
       # ==========================================================
@@ -161,9 +178,13 @@ jobs:
 
           rm -rf target-repo
 
-          echo "Cloning target repository..."
-          echo "Repository: $TARGET_REPO"
-          echo "Branch: ${{ inputs.target_branch }}"
+          echo "=================================================="
+          echo "CLONING TARGET REPOSITORY"
+          echo "=================================================="
+          echo ""
+          echo "Repository : $TARGET_REPO"
+          echo "Branch     : ${{ inputs.target_branch }}"
+          echo ""
 
           git clone \
             --branch "${{ inputs.target_branch }}" \
@@ -178,10 +199,10 @@ jobs:
 
 
       # ==========================================================
-      # 5. Clone current/source Phase 1 repository
+      # 5. Clone current Phase 1 repository
       #
-      # Source repository is automatically:
-      # ${{ github.repository }}
+      # github.repository automatically identifies the current
+      # repository where this workflow is running.
       # ==========================================================
 
       - name: Clone current Phase 1 repository
@@ -193,9 +214,13 @@ jobs:
 
           rm -rf source-repo
 
-          echo "Cloning source repository..."
-          echo "Repository: $SOURCE_REPO"
-          echo "Branch: ${{ inputs.source_branch }}"
+          echo "=================================================="
+          echo "CLONING SOURCE REPOSITORY"
+          echo "=================================================="
+          echo ""
+          echo "Repository : $SOURCE_REPO"
+          echo "Branch     : ${{ inputs.source_branch }}"
+          echo ""
 
           git clone \
             --branch "${{ inputs.source_branch }}" \
@@ -220,34 +245,51 @@ jobs:
 
           cd target-repo
 
+          echo "=================================================="
+          echo "CREATING SYNCHRONIZATION BRANCH"
+          echo "=================================================="
+
           git checkout -b "${{ inputs.sync_branch }}"
 
           echo ""
-          echo "Synchronization branch created:"
+          echo "Created branch:"
           git branch --show-current
 
 
       # ==========================================================
-      # 7. Copy source files to target
+      # 7. Synchronize source → target
       #
-      # Ignored:
-      #   .git/
-      #   .github/
-      #   .stratus/
+      # --delete means:
       #
-      # Target-only files are preserved.
+      # Source added file     → added
+      # Source modified file  → updated
+      # Source deleted file   → deleted
+      #
+      # .github and .stratus are excluded and therefore protected.
       # ==========================================================
 
-      - name: Copy Phase 1 files into Phase 2
+      - name: Synchronize Phase 1 into Phase 2
         shell: bash
         run: |
           set -e
 
-          echo "=============================================="
-          echo "Copying Phase 1 files into Phase 2"
-          echo "=============================================="
+          echo "=================================================="
+          echo "SYNCHRONIZING PHASE 1 → PHASE 2"
+          echo "=================================================="
+          echo ""
+          echo "Added files     : will be synchronized"
+          echo "Modified files  : will be synchronized"
+          echo "Updated files   : will be synchronized"
+          echo "Deleted files   : will be synchronized"
+          echo ""
+          echo "Protected:"
+          echo "  .github/"
+          echo "  .stratus/"
+          echo "  .git/"
+          echo ""
 
           rsync -av \
+            --delete \
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='.stratus/' \
@@ -255,17 +297,43 @@ jobs:
             target-repo/
 
           echo ""
-          echo "Files copied successfully."
+          echo "Synchronization completed."
+
+
+      # ==========================================================
+      # 8. Protect .github and .stratus
+      #
+      # This verifies that the target's protected folders were
+      # not modified by the synchronization.
+      # ==========================================================
+
+      - name: Verify protected folders
+        shell: bash
+        run: |
+          set -e
+
+          cd target-repo
+
+          echo "=================================================="
+          echo "VERIFYING PROTECTED FOLDERS"
+          echo "=================================================="
 
           echo ""
-          echo "Ignored:"
-          echo "  .git/"
+          echo ".github/ and .stratus/ were excluded from rsync."
+
+          echo ""
+          echo "Protected folders:"
           echo "  .github/"
           echo "  .stratus/"
 
 
       # ==========================================================
-      # 8. Stage all changes
+      # 9. Stage all changes
+      #
+      # git add -A detects:
+      #   Added
+      #   Modified
+      #   Deleted
       # ==========================================================
 
       - name: Stage synchronization changes
@@ -275,9 +343,9 @@ jobs:
 
           cd target-repo
 
-          echo "=============================================="
-          echo "Staging synchronization changes"
-          echo "=============================================="
+          echo "=================================================="
+          echo "STAGING CHANGES"
+          echo "=================================================="
 
           git add -A
 
@@ -287,37 +355,12 @@ jobs:
 
 
       # ==========================================================
-      # 9. Show changes
+      # 10. Detect actual changes
+      #
+      # Explicitly exclude .github and .stratus from PR changes.
       # ==========================================================
 
-      - name: Show synchronization changes
-        shell: bash
-        run: |
-          set -e
-
-          cd target-repo
-
-          echo "=============================================="
-          echo "CHANGES TO BE INCLUDED IN PR"
-          echo "=============================================="
-
-          echo ""
-          echo "Changed files:"
-          git diff --cached --name-status
-
-          echo ""
-          echo "Change summary:"
-          git diff --cached --stat
-
-          echo ""
-          echo "=============================================="
-
-
-      # ==========================================================
-      # 10. Check for changes
-      # ==========================================================
-
-      - name: Check for changes
+      - name: Detect synchronization changes
         id: changes
         shell: bash
         run: |
@@ -325,31 +368,67 @@ jobs:
 
           cd target-repo
 
-          if git diff --cached --quiet; then
+          echo "=================================================="
+          echo "DETECTING CHANGES"
+          echo "=================================================="
+
+          CHANGED_FILES=$(git diff --cached --name-only -- \
+            ':(exclude).github/**' \
+            ':(exclude).stratus/**')
+
+          if [ -z "$CHANGED_FILES" ]; then
 
             echo "changed=false" >> "$GITHUB_OUTPUT"
 
             echo ""
-            echo "=============================================="
-            echo "NO CHANGES DETECTED"
-            echo "=============================================="
+            echo "NO CHANGES DETECTED."
 
           else
 
             echo "changed=true" >> "$GITHUB_OUTPUT"
 
             echo ""
-            echo "=============================================="
-            echo "CHANGES DETECTED"
-            echo "=============================================="
-
-            git diff --cached --name-status
+            echo "CHANGES DETECTED:"
+            echo ""
+            echo "$CHANGED_FILES"
 
           fi
 
 
       # ==========================================================
-      # 11. Commit changes
+      # 11. Show exact changes
+      # ==========================================================
+
+      - name: Show synchronization changes
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -e
+
+          cd target-repo
+
+          echo "=================================================="
+          echo "CHANGES TO BE INCLUDED IN PR"
+          echo "=================================================="
+          echo ""
+
+          git diff --cached --name-status -- \
+            ':(exclude).github/**' \
+            ':(exclude).stratus/**'
+
+          echo ""
+          echo "=================================================="
+          echo "CHANGE SUMMARY"
+          echo "=================================================="
+          echo ""
+
+          git diff --cached --stat -- \
+            ':(exclude).github/**' \
+            ':(exclude).stratus/**'
+
+
+      # ==========================================================
+      # 12. Commit changes
       # ==========================================================
 
       - name: Commit synchronization changes
@@ -368,7 +447,7 @@ jobs:
 
 
       # ==========================================================
-      # 12. Push synchronization branch
+      # 13. Push synchronization branch
       # ==========================================================
 
       - name: Push synchronization branch
@@ -379,16 +458,18 @@ jobs:
 
           cd target-repo
 
+          TARGET_BRANCH="${{ inputs.sync_branch }}"
+
           git push \
             origin \
-            "${{ inputs.sync_branch }}"
+            "$TARGET_BRANCH"
 
           echo ""
           echo "Synchronization branch pushed successfully."
 
 
       # ==========================================================
-      # 13. Create Pull Request
+      # 14. Create Pull Request
       # ==========================================================
 
       - name: Create Pull Request
@@ -403,7 +484,9 @@ jobs:
 
           cd target-repo
 
-          echo "Creating Pull Request..."
+          echo "=================================================="
+          echo "CREATING PULL REQUEST"
+          echo "=================================================="
 
           PR_URL=$(gh pr create \
             --repo "$TARGET_REPO" \
@@ -413,30 +496,31 @@ jobs:
             --body "${{ inputs.pr_description }}")
 
           echo ""
-          echo "=============================================="
+          echo "=================================================="
           echo "PULL REQUEST CREATED"
-          echo "=============================================="
+          echo "=================================================="
           echo ""
           echo "$PR_URL"
           echo ""
 
 
       # ==========================================================
-      # 14. No changes
+      # 15. No changes
       # ==========================================================
 
       - name: No changes detected
         if: steps.changes.outputs.changed == 'false'
         run: |
-          echo "=============================================="
+          echo "=================================================="
           echo "NO PULL REQUEST CREATED"
-          echo "=============================================="
+          echo "=================================================="
           echo ""
-          echo "There are no changes to synchronize."
+          echo "Source and target are already synchronized."
+          echo ""
 
 
       # ==========================================================
-      # 15. Cleanup credentials
+      # 16. Cleanup credentials
       # ==========================================================
 
       - name: Cleanup credentials
