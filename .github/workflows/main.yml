@@ -10,13 +10,13 @@ on:
         type: string
 
       source_branch:
-        description: "Source branch. Use main, master, or specify another branch."
+        description: "Source branch (example: main, master, or feature/xyz)"
         required: true
         default: "main"
         type: string
 
       target_repo:
-        description: "Target Phase 2 repository. Example: conservice/setup-single-family-activations-p2-ui"
+        description: "Target Phase 2 repository (example: setup-single-family-activations-p2-ui)"
         required: true
         type: string
 
@@ -94,31 +94,34 @@ jobs:
 
 
       # ==========================================================
-      # 2. Display synchronization details
+      # 2. Determine source and target repositories
       # ==========================================================
 
-      - name: Display synchronization details
+      - name: Determine repositories
+        id: repositories
         shell: bash
         run: |
-          echo "=================================================="
-          echo "        PHASE 1 → PHASE 2 SYNCHRONIZATION"
-          echo "=================================================="
-          echo ""
-          echo "Source Repository : ${{ github.repository }}"
+          set -e
+
+          SOURCE_REPO="${{ github.repository }}"
+          TARGET_REPO="${{ inputs.target_repo }}"
+
+          # If only repository name is provided,
+          # automatically add the current repository owner.
+          if [[ "$TARGET_REPO" != */* ]]; then
+            TARGET_REPO="${{ github.repository_owner }}/$TARGET_REPO"
+          fi
+
+          echo "source_repo=$SOURCE_REPO" >> "$GITHUB_OUTPUT"
+          echo "target_repo=$TARGET_REPO" >> "$GITHUB_OUTPUT"
+
+          echo "=============================================="
+          echo "Source Repository : $SOURCE_REPO"
           echo "Source Branch     : ${{ inputs.source_branch }}"
           echo ""
-          echo "Target Repository : ${{ inputs.target_repo }}"
+          echo "Target Repository : $TARGET_REPO"
           echo "Target Branch     : ${{ inputs.target_branch }}"
-          echo ""
-          echo "Sync Branch       : ${{ inputs.sync_branch }}"
-          echo ""
-          echo "Ignored Folders:"
-          echo "  .github/"
-          echo "  .stratus/"
-          echo ""
-          echo "PR Title          : ${{ inputs.pr_title }}"
-          echo ""
-          echo "=================================================="
+          echo "=============================================="
 
 
       # ==========================================================
@@ -146,7 +149,7 @@ jobs:
 
 
       # ==========================================================
-      # 4. Clone TARGET Phase 2 repository
+      # 4. Clone target Phase 2 repository
       # ==========================================================
 
       - name: Clone target Phase 2 repository
@@ -154,24 +157,31 @@ jobs:
         run: |
           set -e
 
+          TARGET_REPO="${{ steps.repositories.outputs.target_repo }}"
+
           rm -rf target-repo
+
+          echo "Cloning target repository..."
+          echo "Repository: $TARGET_REPO"
+          echo "Branch: ${{ inputs.target_branch }}"
 
           git clone \
             --branch "${{ inputs.target_branch }}" \
             --single-branch \
-            "https://github.com/${{ inputs.target_repo }}.git" \
+            "https://github.com/${TARGET_REPO}.git" \
             target-repo
 
           cd target-repo
 
+          echo ""
           echo "Target repository cloned successfully."
 
 
       # ==========================================================
-      # 5. Clone CURRENT SOURCE repository
+      # 5. Clone current/source Phase 1 repository
       #
-      # Source repository is automatically taken from:
-      # github.repository
+      # Source repository is automatically:
+      # ${{ github.repository }}
       # ==========================================================
 
       - name: Clone current Phase 1 repository
@@ -179,22 +189,24 @@ jobs:
         run: |
           set -e
 
+          SOURCE_REPO="${{ steps.repositories.outputs.source_repo }}"
+
           rm -rf source-repo
+
+          echo "Cloning source repository..."
+          echo "Repository: $SOURCE_REPO"
+          echo "Branch: ${{ inputs.source_branch }}"
 
           git clone \
             --branch "${{ inputs.source_branch }}" \
             --single-branch \
-            "https://github.com/${{ github.repository }}.git" \
+            "https://github.com/${SOURCE_REPO}.git" \
             source-repo
 
           cd source-repo
 
-          echo "Source repository:"
-          echo "${{ github.repository }}"
-
           echo ""
-          echo "Source branch:"
-          git branch --show-current
+          echo "Source repository cloned successfully."
 
 
       # ==========================================================
@@ -218,9 +230,10 @@ jobs:
       # ==========================================================
       # 7. Copy source files to target
       #
-      # .github/ is ignored
-      # .stratus/ is ignored
-      # .git/ is ignored
+      # Ignored:
+      #   .git/
+      #   .github/
+      #   .stratus/
       #
       # Target-only files are preserved.
       # ==========================================================
@@ -230,9 +243,9 @@ jobs:
         run: |
           set -e
 
-          echo "=================================================="
-          echo "COPYING SOURCE FILES"
-          echo "=================================================="
+          echo "=============================================="
+          echo "Copying Phase 1 files into Phase 2"
+          echo "=============================================="
 
           rsync -av \
             --exclude='.git/' \
@@ -245,13 +258,14 @@ jobs:
           echo "Files copied successfully."
 
           echo ""
-          echo "Ignored folders:"
+          echo "Ignored:"
+          echo "  .git/"
           echo "  .github/"
           echo "  .stratus/"
 
 
       # ==========================================================
-      # 8. Stage changes
+      # 8. Stage all changes
       # ==========================================================
 
       - name: Stage synchronization changes
@@ -261,14 +275,14 @@ jobs:
 
           cd target-repo
 
-          echo "=================================================="
-          echo "STAGING CHANGES"
-          echo "=================================================="
+          echo "=============================================="
+          echo "Staging synchronization changes"
+          echo "=============================================="
 
           git add -A
 
           echo ""
-          echo "Staged files:"
+          echo "Git status:"
           git status --short
 
 
@@ -283,9 +297,9 @@ jobs:
 
           cd target-repo
 
-          echo "=================================================="
+          echo "=============================================="
           echo "CHANGES TO BE INCLUDED IN PR"
-          echo "=================================================="
+          echo "=============================================="
 
           echo ""
           echo "Changed files:"
@@ -296,7 +310,7 @@ jobs:
           git diff --cached --stat
 
           echo ""
-          echo "=================================================="
+          echo "=============================================="
 
 
       # ==========================================================
@@ -316,18 +330,18 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
 
             echo ""
-            echo "=================================================="
+            echo "=============================================="
             echo "NO CHANGES DETECTED"
-            echo "=================================================="
+            echo "=============================================="
 
           else
 
             echo "changed=true" >> "$GITHUB_OUTPUT"
 
             echo ""
-            echo "=================================================="
+            echo "=============================================="
             echo "CHANGES DETECTED"
-            echo "=================================================="
+            echo "=============================================="
 
             git diff --cached --name-status
 
@@ -350,7 +364,7 @@ jobs:
             -m "Sync Phase 1 into Phase 2"
 
           echo ""
-          echo "Synchronization changes committed."
+          echo "Synchronization changes committed successfully."
 
 
       # ==========================================================
@@ -385,21 +399,23 @@ jobs:
         run: |
           set -e
 
+          TARGET_REPO="${{ steps.repositories.outputs.target_repo }}"
+
           cd target-repo
 
           echo "Creating Pull Request..."
 
           PR_URL=$(gh pr create \
-            --repo "${{ inputs.target_repo }}" \
+            --repo "$TARGET_REPO" \
             --base "${{ inputs.target_branch }}" \
             --head "${{ inputs.sync_branch }}" \
             --title "${{ inputs.pr_title }}" \
             --body "${{ inputs.pr_description }}")
 
           echo ""
-          echo "=================================================="
+          echo "=============================================="
           echo "PULL REQUEST CREATED"
-          echo "=================================================="
+          echo "=============================================="
           echo ""
           echo "$PR_URL"
           echo ""
@@ -412,9 +428,9 @@ jobs:
       - name: No changes detected
         if: steps.changes.outputs.changed == 'false'
         run: |
-          echo "=================================================="
+          echo "=============================================="
           echo "NO PULL REQUEST CREATED"
-          echo "=================================================="
+          echo "=============================================="
           echo ""
           echo "There are no changes to synchronize."
 
