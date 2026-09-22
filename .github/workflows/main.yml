@@ -5,32 +5,28 @@ on:
     inputs:
 
       github_token:
-        description: "GitHub Personal Access Token with access to both repositories"
+        description: "GitHub Personal Access Token with access to source and target repositories"
         required: true
         type: string
 
-      phase1_repo:
-        description: "Phase 1 source repository"
+      source_branch:
+        description: "Source branch. Use main, master, or specify another branch."
+        required: true
+        default: "main"
+        type: string
+
+      target_repo:
+        description: "Target Phase 2 repository. Example: conservice/setup-single-family-activations-p2-ui"
         required: true
         type: string
 
-      phase1_branch:
-        description: "Phase 1 source branch"
-        required: true
-        type: string
-
-      phase2_repo:
-        description: "Phase 2 target repository"
-        required: true
-        type: string
-
-      phase2_branch:
-        description: "Phase 2 target branch"
+      target_branch:
+        description: "Target Phase 2 branch"
         required: true
         type: string
 
       sync_branch:
-        description: "Branch to create in Phase 2 repository"
+        description: "Branch to create in target repository"
         required: true
         type: string
 
@@ -69,23 +65,18 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${{ inputs.phase1_repo }}" ]; then
-            echo "ERROR: Phase 1 repository is required."
+          if [ -z "${{ inputs.source_branch }}" ]; then
+            echo "ERROR: Source branch is required."
             exit 1
           fi
 
-          if [ -z "${{ inputs.phase1_branch }}" ]; then
-            echo "ERROR: Phase 1 branch is required."
+          if [ -z "${{ inputs.target_repo }}" ]; then
+            echo "ERROR: Target repository is required."
             exit 1
           fi
 
-          if [ -z "${{ inputs.phase2_repo }}" ]; then
-            echo "ERROR: Phase 2 repository is required."
-            exit 1
-          fi
-
-          if [ -z "${{ inputs.phase2_branch }}" ]; then
-            echo "ERROR: Phase 2 branch is required."
+          if [ -z "${{ inputs.target_branch }}" ]; then
+            echo "ERROR: Target branch is required."
             exit 1
           fi
 
@@ -113,13 +104,17 @@ jobs:
           echo "        PHASE 1 → PHASE 2 SYNCHRONIZATION"
           echo "=================================================="
           echo ""
-          echo "Source Repository : ${{ inputs.phase1_repo }}"
-          echo "Source Branch     : ${{ inputs.phase1_branch }}"
+          echo "Source Repository : ${{ github.repository }}"
+          echo "Source Branch     : ${{ inputs.source_branch }}"
           echo ""
-          echo "Target Repository : ${{ inputs.phase2_repo }}"
-          echo "Target Branch     : ${{ inputs.phase2_branch }}"
+          echo "Target Repository : ${{ inputs.target_repo }}"
+          echo "Target Branch     : ${{ inputs.target_branch }}"
           echo ""
           echo "Sync Branch       : ${{ inputs.sync_branch }}"
+          echo ""
+          echo "Ignored Folders:"
+          echo "  .github/"
+          echo "  .stratus/"
           echo ""
           echo "PR Title          : ${{ inputs.pr_title }}"
           echo ""
@@ -151,10 +146,10 @@ jobs:
 
 
       # ==========================================================
-      # 4. Clone Phase 2 target repository
+      # 4. Clone TARGET Phase 2 repository
       # ==========================================================
 
-      - name: Clone Phase 2 repository
+      - name: Clone target Phase 2 repository
         shell: bash
         run: |
           set -e
@@ -162,9 +157,9 @@ jobs:
           rm -rf target-repo
 
           git clone \
-            --branch "${{ inputs.phase2_branch }}" \
+            --branch "${{ inputs.target_branch }}" \
             --single-branch \
-            "https://github.com/${{ github.repository_owner }}/${{ inputs.phase2_repo }}.git" \
+            "https://github.com/${{ inputs.target_repo }}.git" \
             target-repo
 
           cd target-repo
@@ -173,10 +168,13 @@ jobs:
 
 
       # ==========================================================
-      # 5. Clone Phase 1 source repository
+      # 5. Clone CURRENT SOURCE repository
+      #
+      # Source repository is automatically taken from:
+      # github.repository
       # ==========================================================
 
-      - name: Clone Phase 1 repository
+      - name: Clone current Phase 1 repository
         shell: bash
         run: |
           set -e
@@ -184,14 +182,19 @@ jobs:
           rm -rf source-repo
 
           git clone \
-            --branch "${{ inputs.phase1_branch }}" \
+            --branch "${{ inputs.source_branch }}" \
             --single-branch \
-            "https://github.com/${{ github.repository_owner }}/${{ inputs.phase1_repo }}.git" \
+            "https://github.com/${{ github.repository }}.git" \
             source-repo
 
           cd source-repo
 
-          echo "Source repository cloned successfully."
+          echo "Source repository:"
+          echo "${{ github.repository }}"
+
+          echo ""
+          echo "Source branch:"
+          git branch --show-current
 
 
       # ==========================================================
@@ -213,12 +216,13 @@ jobs:
 
 
       # ==========================================================
-      # 7. Copy Phase 1 files into Phase 2
+      # 7. Copy source files to target
       #
-      # IMPORTANT:
-      # No git merge is performed.
+      # .github/ is ignored
+      # .stratus/ is ignored
+      # .git/ is ignored
       #
-      # Existing target-only files are NOT deleted.
+      # Target-only files are preserved.
       # ==========================================================
 
       - name: Copy Phase 1 files into Phase 2
@@ -227,23 +231,27 @@ jobs:
           set -e
 
           echo "=================================================="
-          echo "Copying Phase 1 files into Phase 2"
+          echo "COPYING SOURCE FILES"
           echo "=================================================="
 
           rsync -av \
-            --exclude='.git' \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.stratus/' \
             source-repo/ \
             target-repo/
 
           echo ""
           echo "Files copied successfully."
 
+          echo ""
+          echo "Ignored folders:"
+          echo "  .github/"
+          echo "  .stratus/"
+
 
       # ==========================================================
-      # 8. Stage all changes
-      #
-      # This is important because git diff does not detect
-      # untracked files until they are staged.
+      # 8. Stage changes
       # ==========================================================
 
       - name: Stage synchronization changes
@@ -254,18 +262,18 @@ jobs:
           cd target-repo
 
           echo "=================================================="
-          echo "STAGING SYNCHRONIZATION CHANGES"
+          echo "STAGING CHANGES"
           echo "=================================================="
 
           git add -A
 
           echo ""
-          echo "Staged changes:"
+          echo "Staged files:"
           git status --short
 
 
       # ==========================================================
-      # 9. Show synchronization changes
+      # 9. Show changes
       # ==========================================================
 
       - name: Show synchronization changes
@@ -284,7 +292,7 @@ jobs:
           git diff --cached --name-status
 
           echo ""
-          echo "Detailed changes:"
+          echo "Change summary:"
           git diff --cached --stat
 
           echo ""
@@ -311,8 +319,6 @@ jobs:
             echo "=================================================="
             echo "NO CHANGES DETECTED"
             echo "=================================================="
-            echo ""
-            echo "Source and target repositories have no file changes."
 
           else
 
@@ -322,7 +328,6 @@ jobs:
             echo "=================================================="
             echo "CHANGES DETECTED"
             echo "=================================================="
-            echo ""
 
             git diff --cached --name-status
 
@@ -330,7 +335,7 @@ jobs:
 
 
       # ==========================================================
-      # 11. Commit synchronization changes
+      # 11. Commit changes
       # ==========================================================
 
       - name: Commit synchronization changes
@@ -345,7 +350,7 @@ jobs:
             -m "Sync Phase 1 into Phase 2"
 
           echo ""
-          echo "Synchronization changes committed successfully."
+          echo "Synchronization changes committed."
 
 
       # ==========================================================
@@ -385,8 +390,8 @@ jobs:
           echo "Creating Pull Request..."
 
           PR_URL=$(gh pr create \
-            --repo "${{ github.repository_owner }}/${{ inputs.phase2_repo }}" \
-            --base "${{ inputs.phase2_branch }}" \
+            --repo "${{ inputs.target_repo }}" \
+            --base "${{ inputs.target_branch }}" \
             --head "${{ inputs.sync_branch }}" \
             --title "${{ inputs.pr_title }}" \
             --body "${{ inputs.pr_description }}")
@@ -398,11 +403,10 @@ jobs:
           echo ""
           echo "$PR_URL"
           echo ""
-          echo "=================================================="
 
 
       # ==========================================================
-      # 14. No changes message
+      # 14. No changes
       # ==========================================================
 
       - name: No changes detected
@@ -413,37 +417,10 @@ jobs:
           echo "=================================================="
           echo ""
           echo "There are no changes to synchronize."
-          echo ""
 
 
       # ==========================================================
-      # 15. Final summary
-      # ==========================================================
-
-      - name: Synchronization summary
-        if: always()
-        shell: bash
-        run: |
-          echo ""
-          echo "=================================================="
-          echo "              SYNCHRONIZATION SUMMARY"
-          echo "=================================================="
-          echo ""
-          echo "Direction         : Phase 1 → Phase 2"
-          echo ""
-          echo "Source Repository : ${{ inputs.phase1_repo }}"
-          echo "Source Branch     : ${{ inputs.phase1_branch }}"
-          echo ""
-          echo "Target Repository : ${{ inputs.phase2_repo }}"
-          echo "Target Branch     : ${{ inputs.phase2_branch }}"
-          echo ""
-          echo "Sync Branch       : ${{ inputs.sync_branch }}"
-          echo ""
-          echo "=================================================="
-
-
-      # ==========================================================
-      # 16. Cleanup credentials
+      # 15. Cleanup credentials
       # ==========================================================
 
       - name: Cleanup credentials
