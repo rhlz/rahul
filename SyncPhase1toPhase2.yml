@@ -98,7 +98,7 @@ jobs:
       - name: Push synchronization branch
         run: |
           git push origin "${{ inputs.sync_branch }}"
-
+//ygftyt
       - name: Create Pull Request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
