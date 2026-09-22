@@ -99,11 +99,11 @@ jobs:
             exit 1
           fi
 
-          echo "Input validation completed."
+          echo "Input validation completed successfully."
 
 
       # ==========================================================
-      # 2. Display synchronization information
+      # 2. Display synchronization details
       # ==========================================================
 
       - name: Display synchronization details
@@ -151,7 +151,7 @@ jobs:
 
 
       # ==========================================================
-      # 4. Clone target Phase 2 repository
+      # 4. Clone Phase 2 target repository
       # ==========================================================
 
       - name: Clone Phase 2 repository
@@ -169,13 +169,11 @@ jobs:
 
           cd target-repo
 
-          git fetch --all --tags
-
-          echo "Target repository cloned."
+          echo "Target repository cloned successfully."
 
 
       # ==========================================================
-      # 5. Clone source Phase 1 repository
+      # 5. Clone Phase 1 source repository
       # ==========================================================
 
       - name: Clone Phase 1 repository
@@ -193,13 +191,11 @@ jobs:
 
           cd source-repo
 
-          git fetch --all --tags
-
-          echo "Source repository cloned."
+          echo "Source repository cloned successfully."
 
 
       # ==========================================================
-      # 6. Create synchronization branch in Phase 2
+      # 6. Create synchronization branch
       # ==========================================================
 
       - name: Create synchronization branch
@@ -217,13 +213,12 @@ jobs:
 
 
       # ==========================================================
-      # 7. Synchronize source files
+      # 7. Copy Phase 1 files into Phase 2
       #
       # IMPORTANT:
       # No git merge is performed.
       #
-      # Source repository files are copied into the target
-      # synchronization branch.
+      # Existing target-only files are NOT deleted.
       # ==========================================================
 
       - name: Copy Phase 1 files into Phase 2
@@ -245,7 +240,32 @@ jobs:
 
 
       # ==========================================================
-      # 8. Show changes
+      # 8. Stage all changes
+      #
+      # This is important because git diff does not detect
+      # untracked files until they are staged.
+      # ==========================================================
+
+      - name: Stage synchronization changes
+        shell: bash
+        run: |
+          set -e
+
+          cd target-repo
+
+          echo "=================================================="
+          echo "STAGING SYNCHRONIZATION CHANGES"
+          echo "=================================================="
+
+          git add -A
+
+          echo ""
+          echo "Staged changes:"
+          git status --short
+
+
+      # ==========================================================
+      # 9. Show synchronization changes
       # ==========================================================
 
       - name: Show synchronization changes
@@ -259,38 +279,58 @@ jobs:
           echo "CHANGES TO BE INCLUDED IN PR"
           echo "=================================================="
 
-          git status --short
-
           echo ""
           echo "Changed files:"
-          git diff --name-status
+          git diff --cached --name-status
+
+          echo ""
+          echo "Detailed changes:"
+          git diff --cached --stat
+
+          echo ""
+          echo "=================================================="
 
 
       # ==========================================================
-      # 9. Check whether there are changes
+      # 10. Check for changes
       # ==========================================================
 
       - name: Check for changes
         id: changes
         shell: bash
         run: |
+          set -e
+
           cd target-repo
 
-          if git diff --quiet && git diff --cached --quiet; then
+          if git diff --cached --quiet; then
+
             echo "changed=false" >> "$GITHUB_OUTPUT"
 
             echo ""
-            echo "No changes detected."
+            echo "=================================================="
+            echo "NO CHANGES DETECTED"
+            echo "=================================================="
+            echo ""
+            echo "Source and target repositories have no file changes."
+
           else
+
             echo "changed=true" >> "$GITHUB_OUTPUT"
 
             echo ""
-            echo "Changes detected."
+            echo "=================================================="
+            echo "CHANGES DETECTED"
+            echo "=================================================="
+            echo ""
+
+            git diff --cached --name-status
+
           fi
 
 
       # ==========================================================
-      # 10. Commit synchronization changes
+      # 11. Commit synchronization changes
       # ==========================================================
 
       - name: Commit synchronization changes
@@ -301,16 +341,15 @@ jobs:
 
           cd target-repo
 
-          git add -A
-
           git commit \
             -m "Sync Phase 1 into Phase 2"
 
-          echo "Synchronization changes committed."
+          echo ""
+          echo "Synchronization changes committed successfully."
 
 
       # ==========================================================
-      # 11. Push synchronization branch
+      # 12. Push synchronization branch
       # ==========================================================
 
       - name: Push synchronization branch
@@ -325,11 +364,12 @@ jobs:
             origin \
             "${{ inputs.sync_branch }}"
 
+          echo ""
           echo "Synchronization branch pushed successfully."
 
 
       # ==========================================================
-      # 12. Create Pull Request
+      # 13. Create Pull Request
       # ==========================================================
 
       - name: Create Pull Request
@@ -341,6 +381,8 @@ jobs:
           set -e
 
           cd target-repo
+
+          echo "Creating Pull Request..."
 
           PR_URL=$(gh pr create \
             --repo "${{ github.repository_owner }}/${{ inputs.phase2_repo }}" \
@@ -356,25 +398,52 @@ jobs:
           echo ""
           echo "$PR_URL"
           echo ""
+          echo "=================================================="
 
 
       # ==========================================================
-      # 13. No changes
+      # 14. No changes message
       # ==========================================================
 
       - name: No changes detected
         if: steps.changes.outputs.changed == 'false'
         run: |
           echo "=================================================="
-          echo "NO CHANGES"
+          echo "NO PULL REQUEST CREATED"
           echo "=================================================="
           echo ""
-          echo "Phase 1 and Phase 2 currently have the same files."
-          echo "No Pull Request was created."
+          echo "There are no changes to synchronize."
+          echo ""
 
 
       # ==========================================================
-      # 14. Cleanup credentials
+      # 15. Final summary
+      # ==========================================================
+
+      - name: Synchronization summary
+        if: always()
+        shell: bash
+        run: |
+          echo ""
+          echo "=================================================="
+          echo "              SYNCHRONIZATION SUMMARY"
+          echo "=================================================="
+          echo ""
+          echo "Direction         : Phase 1 → Phase 2"
+          echo ""
+          echo "Source Repository : ${{ inputs.phase1_repo }}"
+          echo "Source Branch     : ${{ inputs.phase1_branch }}"
+          echo ""
+          echo "Target Repository : ${{ inputs.phase2_repo }}"
+          echo "Target Branch     : ${{ inputs.phase2_branch }}"
+          echo ""
+          echo "Sync Branch       : ${{ inputs.sync_branch }}"
+          echo ""
+          echo "=================================================="
+
+
+      # ==========================================================
+      # 16. Cleanup credentials
       # ==========================================================
 
       - name: Cleanup credentials
