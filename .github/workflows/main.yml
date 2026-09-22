@@ -1,4 +1,4 @@
-name: Sync Phase 1 to Phase 2
+name: Sync Phase 2 to Phase 1
 
 on:
   workflow_dispatch:
@@ -9,28 +9,28 @@ on:
         required: true
         type: string
 
-      phase1_repo:
-        description: "Phase 1 source repository"
-        required: true
-        type: string
-
-      phase1_branch:
-        description: "Phase 1 source branch"
-        required: true
-        type: string
-
       phase2_repo:
-        description: "Phase 2 target repository"
+        description: "Phase 2 source repository"
         required: true
         type: string
 
       phase2_branch:
-        description: "Phase 2 target branch"
+        description: "Phase 2 source branch"
+        required: true
+        type: string
+
+      phase1_repo:
+        description: "Phase 1 target repository"
+        required: true
+        type: string
+
+      phase1_branch:
+        description: "Phase 1 target branch"
         required: true
         type: string
 
       sync_branch:
-        description: "Branch to create in Phase 2 repository"
+        description: "Branch to create in Phase 1 repository"
         required: true
         type: string
 
@@ -48,7 +48,7 @@ on:
 jobs:
 
   sync:
-    name: Sync Phase 1 → Phase 2
+    name: Sync Phase 2 → Phase 1
     runs-on: ubuntu-latest
 
     steps:
@@ -69,16 +69,6 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${{ inputs.phase1_repo }}" ]; then
-            echo "ERROR: Phase 1 repository is required."
-            exit 1
-          fi
-
-          if [ -z "${{ inputs.phase1_branch }}" ]; then
-            echo "ERROR: Phase 1 branch is required."
-            exit 1
-          fi
-
           if [ -z "${{ inputs.phase2_repo }}" ]; then
             echo "ERROR: Phase 2 repository is required."
             exit 1
@@ -86,6 +76,16 @@ jobs:
 
           if [ -z "${{ inputs.phase2_branch }}" ]; then
             echo "ERROR: Phase 2 branch is required."
+            exit 1
+          fi
+
+          if [ -z "${{ inputs.phase1_repo }}" ]; then
+            echo "ERROR: Phase 1 repository is required."
+            exit 1
+          fi
+
+          if [ -z "${{ inputs.phase1_branch }}" ]; then
+            echo "ERROR: Phase 1 branch is required."
             exit 1
           fi
 
@@ -110,14 +110,14 @@ jobs:
         shell: bash
         run: |
           echo "=================================================="
-          echo "        PHASE 1 → PHASE 2 SYNCHRONIZATION"
+          echo "        PHASE 2 → PHASE 1 SYNCHRONIZATION"
           echo "=================================================="
           echo ""
-          echo "Source Repository : ${{ inputs.phase1_repo }}"
-          echo "Source Branch     : ${{ inputs.phase1_branch }}"
+          echo "Source Repository : ${{ inputs.phase2_repo }}"
+          echo "Source Branch     : ${{ inputs.phase2_branch }}"
           echo ""
-          echo "Target Repository : ${{ inputs.phase2_repo }}"
-          echo "Target Branch     : ${{ inputs.phase2_branch }}"
+          echo "Target Repository : ${{ inputs.phase1_repo }}"
+          echo "Target Branch     : ${{ inputs.phase1_branch }}"
           echo ""
           echo "Sync Branch       : ${{ inputs.sync_branch }}"
           echo ""
@@ -151,10 +151,10 @@ jobs:
 
 
       # ==========================================================
-      # 4. Clone Phase 2 target repository
+      # 4. Clone Phase 1 target repository
       # ==========================================================
 
-      - name: Clone Phase 2 repository
+      - name: Clone Phase 1 repository
         shell: bash
         run: |
           set -e
@@ -162,9 +162,9 @@ jobs:
           rm -rf target-repo
 
           git clone \
-            --branch "${{ inputs.phase2_branch }}" \
+            --branch "${{ inputs.phase1_branch }}" \
             --single-branch \
-            "https://github.com/${{ github.repository_owner }}/${{ inputs.phase2_repo }}.git" \
+            "https://github.com/${{ github.repository_owner }}/${{ inputs.phase1_repo }}.git" \
             target-repo
 
           cd target-repo
@@ -173,10 +173,10 @@ jobs:
 
 
       # ==========================================================
-      # 5. Clone Phase 1 source repository
+      # 5. Clone Phase 2 source repository
       # ==========================================================
 
-      - name: Clone Phase 1 repository
+      - name: Clone Phase 2 repository
         shell: bash
         run: |
           set -e
@@ -184,9 +184,9 @@ jobs:
           rm -rf source-repo
 
           git clone \
-            --branch "${{ inputs.phase1_branch }}" \
+            --branch "${{ inputs.phase2_branch }}" \
             --single-branch \
-            "https://github.com/${{ github.repository_owner }}/${{ inputs.phase1_repo }}.git" \
+            "https://github.com/${{ github.repository_owner }}/${{ inputs.phase2_repo }}.git" \
             source-repo
 
           cd source-repo
@@ -213,7 +213,7 @@ jobs:
 
 
       # ==========================================================
-      # 7. Copy Phase 1 files into Phase 2
+      # 7. Copy Phase 2 files into Phase 1
       #
       # IMPORTANT:
       # No git merge is performed.
@@ -221,13 +221,13 @@ jobs:
       # Existing target-only files are NOT deleted.
       # ==========================================================
 
-      - name: Copy Phase 1 files into Phase 2
+      - name: Copy Phase 2 files into Phase 1
         shell: bash
         run: |
           set -e
 
           echo "=================================================="
-          echo "Copying Phase 1 files into Phase 2"
+          echo "Copying Phase 2 files into Phase 1"
           echo "=================================================="
 
           rsync -av \
@@ -242,8 +242,11 @@ jobs:
       # ==========================================================
       # 8. Stage all changes
       #
-      # This is important because git diff does not detect
-      # untracked files until they are staged.
+      # This detects:
+      # - New files
+      # - Modified files
+      # - Deleted files
+      # - Renamed files
       # ==========================================================
 
       - name: Stage synchronization changes
@@ -284,7 +287,7 @@ jobs:
           git diff --cached --name-status
 
           echo ""
-          echo "Detailed changes:"
+          echo "Change summary:"
           git diff --cached --stat
 
           echo ""
@@ -342,7 +345,7 @@ jobs:
           cd target-repo
 
           git commit \
-            -m "Sync Phase 1 into Phase 2"
+            -m "Sync Phase 2 into Phase 1"
 
           echo ""
           echo "Synchronization changes committed successfully."
@@ -385,8 +388,8 @@ jobs:
           echo "Creating Pull Request..."
 
           PR_URL=$(gh pr create \
-            --repo "${{ github.repository_owner }}/${{ inputs.phase2_repo }}" \
-            --base "${{ inputs.phase2_branch }}" \
+            --repo "${{ github.repository_owner }}/${{ inputs.phase1_repo }}" \
+            --base "${{ inputs.phase1_branch }}" \
             --head "${{ inputs.sync_branch }}" \
             --title "${{ inputs.pr_title }}" \
             --body "${{ inputs.pr_description }}")
@@ -429,13 +432,13 @@ jobs:
           echo "              SYNCHRONIZATION SUMMARY"
           echo "=================================================="
           echo ""
-          echo "Direction         : Phase 1 → Phase 2"
+          echo "Direction         : Phase 2 → Phase 1"
           echo ""
-          echo "Source Repository : ${{ inputs.phase1_repo }}"
-          echo "Source Branch     : ${{ inputs.phase1_branch }}"
+          echo "Source Repository : ${{ inputs.phase2_repo }}"
+          echo "Source Branch     : ${{ inputs.phase2_branch }}"
           echo ""
-          echo "Target Repository : ${{ inputs.phase2_repo }}"
-          echo "Target Branch     : ${{ inputs.phase2_branch }}"
+          echo "Target Repository : ${{ inputs.phase1_repo }}"
+          echo "Target Branch     : ${{ inputs.phase1_branch }}"
           echo ""
           echo "Sync Branch       : ${{ inputs.sync_branch }}"
           echo ""
