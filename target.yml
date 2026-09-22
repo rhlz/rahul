@@ -1,4 +1,4 @@
-name: Sync Phase 2 to Phase 1
+
 
 on:
   workflow_dispatch:
