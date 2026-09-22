@@ -5,7 +5,7 @@ on:
     inputs:
 
       github_token:
-        description: "GitHub PAT with repo access"
+        description: "GitHub PAT with access to source and target repositories"
         required: true
         type: string
 
@@ -16,18 +16,18 @@ on:
         type: string
 
       target_repo:
-        description: "Phase 2 target repository. Example: setup-single-family-activations-p2-ui"
+        description: "Target Phase 2 repository. Example: setup-single-family-activations-p2-ui"
         required: true
         type: string
 
       target_branch:
-        description: "Target branch in Phase 2 repository"
+        description: "Target branch"
         required: true
         default: "main"
         type: string
 
       sync_branch:
-        description: "Branch to create for synchronization"
+        description: "Synchronization PR branch"
         required: true
         default: "sync/phase1-to-phase2"
         type: string
@@ -41,14 +41,14 @@ on:
       pr_description:
         description: "Pull Request description"
         required: false
-        default: "Synchronization PR from Phase 1 to Phase 2."
+        default: "Synchronization from Phase 1 to Phase 2."
         type: string
 
 
 jobs:
 
   sync:
-    name: Sync Phase 1 → Phase 2
+    name: Phase 1 → Phase 2
     runs-on: ubuntu-latest
 
     env:
@@ -56,9 +56,10 @@ jobs:
 
     steps:
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 1. Install tools
-      # ---------------------------------------------------------
+      # =========================================================
+
       - name: Install dependencies
         shell: bash
         run: |
@@ -71,9 +72,11 @@ jobs:
           rsync --version | head -1
           gh --version
 
-      # ---------------------------------------------------------
-      # 2. Identify source repository automatically
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 2. Determine repositories
+      # =========================================================
+
       - name: Set repository variables
         shell: bash
         run: |
@@ -84,39 +87,61 @@ jobs:
 
           TARGET_REPO="${{ inputs.target_repo }}"
 
+          # Allow either:
+          #
+          # setup-single-family-activations-p2-ui
+          #
+          # OR:
+          #
+          # conservice/setup-single-family-activations-p2-ui
+
           if [[ "$TARGET_REPO" != */* ]]; then
             TARGET_REPO="${OWNER}/${TARGET_REPO}"
           fi
 
-          echo "SOURCE_REPO=$SOURCE_REPO" >> "$GITHUB_ENV"
-          echo "TARGET_REPO=$TARGET_REPO" >> "$GITHUB_ENV"
+          echo "SOURCE_REPO=${SOURCE_REPO}" >> "$GITHUB_ENV"
+          echo "TARGET_REPO=${TARGET_REPO}" >> "$GITHUB_ENV"
 
-          echo "Source repository : $SOURCE_REPO"
-          echo "Target repository : $TARGET_REPO"
-          echo "Source branch     : ${{ inputs.source_branch }}"
-          echo "Target branch     : ${{ inputs.target_branch }}"
-          echo "Sync branch       : ${{ inputs.sync_branch }}"
+          echo "=========================================="
+          echo "SOURCE REPOSITORY"
+          echo "=========================================="
+          echo "${SOURCE_REPO}"
 
-      # ---------------------------------------------------------
+          echo ""
+          echo "=========================================="
+          echo "TARGET REPOSITORY"
+          echo "=========================================="
+          echo "${TARGET_REPO}"
+
+
+      # =========================================================
       # 3. Configure authentication
-      # ---------------------------------------------------------
+      # =========================================================
+
       - name: Configure Git authentication
         shell: bash
         run: |
           set -e
 
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git config \
+            --global user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
           git config --global credential.helper store
 
-          echo "https://x-access-token:${GH_TOKEN}@github.com" > "$HOME/.git-credentials"
+          echo \
+            "https://x-access-token:${GH_TOKEN}@github.com" \
+            > "$HOME/.git-credentials"
 
           chmod 600 "$HOME/.git-credentials"
 
-      # ---------------------------------------------------------
+
+      # =========================================================
       # 4. Clone source repository
-      # ---------------------------------------------------------
+      # =========================================================
+
       - name: Clone source repository
         shell: bash
         run: |
@@ -126,13 +151,22 @@ jobs:
 
           git clone \
             --branch "${{ inputs.source_branch }}" \
-            --single-branch \
             "https://github.com/${SOURCE_REPO}.git" \
             source-repo
 
-      # ---------------------------------------------------------
+          cd source-repo
+
+          git checkout "${{ inputs.source_branch }}"
+
+          echo ""
+          echo "Source SHA:"
+          git rev-parse HEAD
+
+
+      # =========================================================
       # 5. Clone target repository
-      # ---------------------------------------------------------
+      # =========================================================
+
       - name: Clone target repository
         shell: bash
         run: |
@@ -141,44 +175,165 @@ jobs:
           rm -rf target-repo
 
           git clone \
-            --branch "${{ inputs.target_branch }}" \
-            --single-branch \
             "https://github.com/${TARGET_REPO}.git" \
             target-repo
 
-      # ---------------------------------------------------------
-      # 6. Fetch sync baseline
-      # ---------------------------------------------------------
-      - name: Fetch synchronization baseline
+          cd target-repo
+
+          git fetch --all --prune
+
+          git checkout "${{ inputs.target_branch }}"
+
+          git pull origin "${{ inputs.target_branch }}"
+
+          echo ""
+          echo "Target SHA:"
+          git rev-parse HEAD
+
+
+      # =========================================================
+      # 6. Initialize / update sync baseline
+      # =========================================================
+
+      - name: Prepare synchronization baseline
         shell: bash
         run: |
           set -e
 
           cd target-repo
 
-          echo "Checking for sync-baseline branch..."
+          BASELINE_BRANCH="sync-baseline"
 
-          if git ls-remote --exit-code origin refs/heads/sync-baseline >/dev/null 2>&1; then
+          echo "Checking synchronization baseline..."
 
-            echo "sync-baseline branch found."
+          # -------------------------------------------------------
+          # Does baseline branch exist?
+          # -------------------------------------------------------
 
-            git fetch origin sync-baseline:refs/remotes/origin/sync-baseline
+          if git ls-remote \
+              --exit-code \
+              origin \
+              "refs/heads/${BASELINE_BRANCH}" \
+              >/dev/null 2>&1
+          then
 
-            git checkout -b sync-baseline-work origin/sync-baseline
+            echo "sync-baseline exists."
 
-            echo "BASELINE_AVAILABLE=true" >> "$GITHUB_ENV"
+            git fetch origin \
+              "${BASELINE_BRANCH}:refs/remotes/origin/${BASELINE_BRANCH}"
+
+            BASELINE_SHA=$(git rev-parse \
+              "refs/remotes/origin/${BASELINE_BRANCH}")
+
+            echo "Current baseline:"
+            echo "${BASELINE_SHA}"
 
           else
 
-            echo "No sync-baseline branch found."
+            echo "sync-baseline does not exist."
 
-            echo "BASELINE_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "Initializing baseline from target branch."
+
+            TARGET_SHA=$(git rev-parse \
+              "origin/${{ inputs.target_branch }}")
+
+            git checkout -B "${BASELINE_BRANCH}" \
+              "${TARGET_SHA}"
+
+            git push \
+              origin \
+              "${BASELINE_BRANCH}"
+
+            BASELINE_SHA="${TARGET_SHA}"
 
           fi
 
-      # ---------------------------------------------------------
-      # 7. Create synchronization branch
-      # ---------------------------------------------------------
+
+          # -------------------------------------------------------
+          # Find latest merged synchronization PR
+          # -------------------------------------------------------
+
+          echo ""
+          echo "Checking for previously merged sync PR..."
+
+          LAST_MERGED_SHA=$(
+            gh pr list \
+              --repo "${TARGET_REPO}" \
+              --state merged \
+              --base "${{ inputs.target_branch }}" \
+              --head "${{ inputs.sync_branch }}" \
+              --limit 50 \
+              --json number,mergedAt,mergeCommit \
+              --jq '
+                map(
+                  select(.mergedAt != null)
+                )
+                | sort_by(.mergedAt)
+                | last
+                | .mergeCommit.oid // empty
+              '
+          )
+
+          if [[ -n "${LAST_MERGED_SHA}" ]]; then
+
+            echo ""
+            echo "Latest merged synchronization PR commit:"
+            echo "${LAST_MERGED_SHA}"
+
+            echo ""
+            echo "Current baseline:"
+            echo "${BASELINE_SHA}"
+
+            if [[ "${LAST_MERGED_SHA}" != "${BASELINE_SHA}" ]]; then
+
+              echo ""
+              echo "Updating sync-baseline..."
+
+              git fetch origin \
+                "${LAST_MERGED_SHA}"
+
+              git checkout -B "${BASELINE_BRANCH}" \
+                "${LAST_MERGED_SHA}"
+
+              git push \
+                origin \
+                "${BASELINE_BRANCH}" \
+                --force
+
+              BASELINE_SHA="${LAST_MERGED_SHA}"
+
+              echo "Baseline updated."
+
+            else
+
+              echo "Baseline already represents latest merged sync."
+
+            fi
+
+          else
+
+            echo "No previous merged synchronization PR found."
+
+          fi
+
+
+          # -------------------------------------------------------
+          # Save baseline
+          # -------------------------------------------------------
+
+          echo "BASELINE_SHA=${BASELINE_SHA}" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "=========================================="
+          echo "SYNC BASELINE"
+          echo "=========================================="
+          echo "${BASELINE_SHA}"
+
+
+      # =========================================================
+      # 7. Create synchronization branch FROM BASELINE
+      # =========================================================
+
       - name: Create synchronization branch
         shell: bash
         run: |
@@ -186,412 +341,109 @@ jobs:
 
           cd target-repo
 
-          git checkout "${{ inputs.target_branch }}"
+          echo "Creating sync branch from baseline..."
 
-          git pull origin "${{ inputs.target_branch }}"
+          git fetch origin
 
-          git checkout -B "${{ inputs.sync_branch }}"
+          git checkout -B \
+            "${{ inputs.sync_branch }}" \
+            "${BASELINE_SHA}"
 
-          echo "Synchronization branch created."
+          echo ""
+          echo "Sync branch:"
+          git branch --show-current
 
-      # ---------------------------------------------------------
-      # 8. Prepare baseline
-      # ---------------------------------------------------------
-      - name: Prepare baseline
+          echo ""
+          echo "Sync branch SHA:"
+          git rev-parse HEAD
+
+
+      # =========================================================
+      # 8. Copy source files
+      #
+      # IMPORTANT:
+      #
+      # .github and .stratus are protected.
+      # Everything else is synchronized.
+      # =========================================================
+
+      - name: Synchronize source files
         shell: bash
         run: |
           set -e
 
-          rm -rf baseline
-          mkdir -p baseline
+          echo "Synchronizing source files..."
 
-          if [[ "${BASELINE_AVAILABLE}" == "true" ]]; then
-
-            echo "Using existing synchronization baseline."
-
-            cd target-repo
-
-            git archive origin/sync-baseline | tar -x -C ../baseline
-
-            cd ..
-
-          else
-
-            echo "No baseline available."
-            echo "Using target branch as initial baseline."
-
-            rsync -a \
-              --exclude='.git/' \
-              --exclude='.github/' \
-              --exclude='.stratus/' \
-              target-repo/ \
-              baseline/
-
-          fi
-
-      # ---------------------------------------------------------
-      # 9. Prepare source snapshot
-      # ---------------------------------------------------------
-      - name: Prepare source snapshot
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf source-snapshot
-          mkdir -p source-snapshot
-
-          rsync -a \
+          rsync \
+            -av \
+            --delete \
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='.stratus/' \
             source-repo/ \
-            source-snapshot/
+            target-repo/
 
-      # ---------------------------------------------------------
-      # 10. Prepare target snapshot
-      # ---------------------------------------------------------
-      - name: Prepare target snapshot
-        shell: bash
-        run: |
-          set -e
+          echo ""
+          echo "Synchronization copy completed."
 
-          rm -rf target-snapshot
-          mkdir -p target-snapshot
 
-          rsync -a \
-            --exclude='.git/' \
-            --exclude='.github/' \
-            --exclude='.stratus/' \
-            target-repo/ \
-            target-snapshot/
+      # =========================================================
+      # 9. Explicitly restore protected directories
+      # =========================================================
 
-      # ---------------------------------------------------------
-      # 11. Run three-way synchronization
-      # ---------------------------------------------------------
-      - name: Perform three-way synchronization
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf sync-result
-          mkdir -p sync-result
-
-          rm -f conflicts.txt
-
-          touch conflicts.txt
-
-          echo "=========================================="
-          echo "Three-way synchronization"
-          echo "=========================================="
-
-          python3 <<'PY'
-          import os
-          import shutil
-          import subprocess
-          from pathlib import Path
-
-          BASE = Path("baseline")
-          SOURCE = Path("source-snapshot")
-          TARGET = Path("target-snapshot")
-          RESULT = Path("sync-result")
-
-          CONFLICTS = Path("conflicts.txt")
-
-          EXCLUDED = {
-              ".github",
-              ".stratus"
-          }
-
-          def is_excluded(rel):
-              parts = Path(rel).parts
-              return any(part in EXCLUDED for part in parts)
-
-          def files_under(root):
-              result = set()
-
-              if not root.exists():
-                  return result
-
-              for path in root.rglob("*"):
-                  if path.is_file():
-                      rel = path.relative_to(root)
-
-                      if not is_excluded(rel):
-                          result.add(str(rel))
-
-              return result
-
-          def exists(root, rel):
-              return (root / rel).exists()
-
-          def same_file(a, b):
-              if not a.exists() or not b.exists():
-                  return False
-
-              if a.stat().st_size != b.stat().st_size:
-                  return False
-
-              return a.read_bytes() == b.read_bytes()
-
-          def is_text_file(path):
-              try:
-                  data = path.read_bytes()
-
-                  if b"\x00" in data:
-                      return False
-
-                  data.decode("utf-8")
-                  return True
-
-              except Exception:
-                  return False
-
-          def copy_file(src, dst):
-              dst.parent.mkdir(parents=True, exist_ok=True)
-              shutil.copy2(src, dst)
-
-          all_files = (
-              files_under(BASE)
-              | files_under(SOURCE)
-              | files_under(TARGET)
-          )
-
-          conflict_files = []
-
-          for rel in sorted(all_files):
-
-              base = BASE / rel
-              source = SOURCE / rel
-              target = TARGET / rel
-              result = RESULT / rel
-
-              base_exists = base.exists()
-              source_exists = source.exists()
-              target_exists = target.exists()
-
-              # --------------------------------------------------
-              # File did not exist in baseline
-              # --------------------------------------------------
-              if not base_exists:
-
-                  if source_exists and not target_exists:
-
-                      copy_file(source, result)
-
-                  elif target_exists and not source_exists:
-
-                      copy_file(target, result)
-
-                  elif source_exists and target_exists:
-
-                      if same_file(source, target):
-
-                          copy_file(source, result)
-
-                      else:
-
-                          # ADD/ADD conflict
-                          if is_text_file(source) and is_text_file(target):
-
-                              result.parent.mkdir(
-                                  parents=True,
-                                  exist_ok=True
-                              )
-
-                              try:
-
-                                  subprocess.run(
-                                      [
-                                          "git",
-                                          "merge-file",
-                                          "-p",
-                                          "--diff3",
-                                          str(source),
-                                          "/dev/null",
-                                          str(target)
-                                      ],
-                                      stdout=open(result, "wb"),
-                                      stderr=subprocess.PIPE,
-                                      check=False
-                                  )
-
-                              except Exception:
-
-                                  copy_file(source, result)
-
-                          else:
-
-                              copy_file(source, result)
-
-                          conflict_files.append(rel)
-
-                  continue
-
-              # --------------------------------------------------
-              # File existed in baseline
-              # --------------------------------------------------
-
-              source_changed = (
-                  source_exists != base_exists
-                  or (
-                      source_exists
-                      and not same_file(source, base)
-                  )
-              )
-
-              target_changed = (
-                  target_exists != base_exists
-                  or (
-                      target_exists
-                      and not same_file(target, base)
-                  )
-              )
-
-              # Neither changed
-              if not source_changed and not target_changed:
-
-                  if base_exists:
-                      copy_file(base, result)
-
-                  continue
-
-              # Only source changed
-              if source_changed and not target_changed:
-
-                  if source_exists:
-                      copy_file(source, result)
-
-                  continue
-
-              # Only target changed
-              if target_changed and not source_changed:
-
-                  if target_exists:
-                      copy_file(target, result)
-
-                  continue
-
-              # Both changed
-              # --------------------------------------------------
-
-              # Both deleted
-              if not source_exists and not target_exists:
-                  continue
-
-              # Both exist and are identical
-              if source_exists and target_exists and same_file(source, target):
-
-                  copy_file(source, result)
-                  continue
-
-              # Delete vs modify
-              if not source_exists and target_exists:
-
-                  conflict_files.append(rel)
-
-                  copy_file(target, result)
-
-                  continue
-
-              if source_exists and not target_exists:
-
-                  conflict_files.append(rel)
-
-                  copy_file(source, result)
-
-                  continue
-
-              # --------------------------------------------------
-              # Both modified
-              # --------------------------------------------------
-
-              if (
-                  source_exists
-                  and target_exists
-                  and is_text_file(source)
-                  and is_text_file(target)
-                  and is_text_file(base)
-              ):
-
-                  result.parent.mkdir(
-                      parents=True,
-                      exist_ok=True
-                  )
-
-                  merge = subprocess.run(
-                      [
-                          "git",
-                          "merge-file",
-                          "-p",
-                          "--diff3",
-                          str(source),
-                          str(base),
-                          str(target)
-                      ],
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.PIPE
-                  )
-
-                  result.write_bytes(merge.stdout)
-
-                  if merge.returncode != 0:
-                      conflict_files.append(rel)
-
-              else:
-
-                  # Binary conflict.
-                  # Keep source version in PR and report conflict.
-                  copy_file(source, result)
-
-                  conflict_files.append(rel)
-
-          CONFLICTS.write_text(
-              "\n".join(conflict_files) + (
-                  "\n" if conflict_files else ""
-              ),
-              encoding="utf-8"
-          )
-
-          print("")
-          print("Synchronization completed.")
-
-          if conflict_files:
-              print("")
-              print("CONFLICTS DETECTED:")
-              for item in conflict_files:
-                  print(f"  - {item}")
-          else:
-              print("No conflicts detected.")
-
-          PY
-
-      # ---------------------------------------------------------
-      # 12. Apply synchronized result
-      # ---------------------------------------------------------
-      - name: Apply synchronization result
+      - name: Protect .github and .stratus
         shell: bash
         run: |
           set -e
 
           cd target-repo
 
-          find . \
-            -mindepth 1 \
-            -maxdepth 1 \
-            ! -name '.git' \
-            ! -name '.github' \
-            ! -name '.stratus' \
-            -exec rm -rf {} +
+          echo "Protected directories:"
+          echo ".github"
+          echo ".stratus"
 
-          rsync -a \
-            ../sync-result/ \
-            ./
+          git restore \
+            --source="${BASELINE_SHA}" \
+            -- \
+            .github \
+            .stratus \
+            2>/dev/null || true
 
-          echo "Synchronization result applied."
 
-      # ---------------------------------------------------------
-      # 13. Stage changes
-      # ---------------------------------------------------------
+      # =========================================================
+      # 10. Show changes
+      # =========================================================
+
+      - name: Show synchronization changes
+        shell: bash
+        run: |
+          set -e
+
+          cd target-repo
+
+          echo ""
+          echo "=========================================="
+          echo "CHANGES"
+          echo "=========================================="
+
+          git status --short
+
+          echo ""
+          echo "Changed files:"
+
+          git diff \
+            --name-status \
+            "${BASELINE_SHA}" \
+            -- \
+            ':(exclude).github/**' \
+            ':(exclude).stratus/**' \
+            || true
+
+
+      # =========================================================
+      # 11. Stage changes
+      # =========================================================
+
       - name: Stage changes
         shell: bash
         run: |
@@ -601,12 +453,22 @@ jobs:
 
           git add -A
 
-          echo "Changed files:"
-          git diff --cached --name-status || true
+          echo ""
+          echo "Staged changes:"
 
-      # ---------------------------------------------------------
-      # 14. Check whether changes exist
-      # ---------------------------------------------------------
+          git diff \
+            --cached \
+            --name-status \
+            -- \
+            ':(exclude).github/**' \
+            ':(exclude).stratus/**' \
+            || true
+
+
+      # =========================================================
+      # 12. Check whether changes exist
+      # =========================================================
+
       - name: Check changes
         shell: bash
         run: |
@@ -616,70 +478,25 @@ jobs:
 
           if git diff --cached --quiet; then
 
-            echo "No synchronization changes detected."
-
             echo "CHANGES_EXIST=false" >> "$GITHUB_ENV"
 
-          else
+            echo ""
+            echo "No changes detected."
 
-            echo "Synchronization changes detected."
+          else
 
             echo "CHANGES_EXIST=true" >> "$GITHUB_ENV"
 
-          fi
-
-      # ---------------------------------------------------------
-      # 15. Build conflict information
-      # ---------------------------------------------------------
-      - name: Prepare conflict information
-        shell: bash
-        run: |
-          set -e
-
-          if [[ -s conflicts.txt ]]; then
-
-            echo "CONFLICTS_FOUND=true" >> "$GITHUB_ENV"
-
-            {
-              echo ""
-              echo "## ⚠️ Synchronization Conflicts"
-              echo ""
-              echo "The synchronization detected conflicts."
-              echo ""
-              echo "The PR has intentionally been created so the developer can resolve them manually."
-              echo ""
-              echo "### Conflicting files"
-              echo ""
-
-              while IFS= read -r file; do
-                [[ -z "$file" ]] && continue
-                echo "- \`$file\`"
-              done < conflicts.txt
-
-              echo ""
-              echo "### Action required"
-              echo ""
-              echo "Please resolve the conflicts manually before merging this PR."
-
-            } > conflict-description.txt
-
-          else
-
-            echo "CONFLICTS_FOUND=false" >> "$GITHUB_ENV"
-
-            {
-              echo ""
-              echo "## ✅ No synchronization conflicts detected"
-              echo ""
-              echo "The synchronization was completed without detected three-way conflicts."
-
-            } > conflict-description.txt
+            echo ""
+            echo "Changes detected."
 
           fi
 
-      # ---------------------------------------------------------
-      # 16. Commit synchronization branch
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 13. Commit synchronization branch
+      # =========================================================
+
       - name: Commit synchronization changes
         if: env.CHANGES_EXIST == 'true'
         shell: bash
@@ -688,21 +505,18 @@ jobs:
 
           cd target-repo
 
-          if [[ "${CONFLICTS_FOUND}" == "true" ]]; then
+          git commit \
+            -m "Sync Phase 1 to Phase 2"
 
-            COMMIT_MESSAGE="Sync Phase 1 to Phase 2 with conflict resolution required"
+          echo ""
+          echo "Synchronization commit:"
+          git rev-parse HEAD
 
-          else
 
-            COMMIT_MESSAGE="Sync Phase 1 to Phase 2"
+      # =========================================================
+      # 14. Push synchronization branch
+      # =========================================================
 
-          fi
-
-          git commit -m "$COMMIT_MESSAGE"
-
-      # ---------------------------------------------------------
-      # 17. Push synchronization branch
-      # ---------------------------------------------------------
       - name: Push synchronization branch
         if: env.CHANGES_EXIST == 'true'
         shell: bash
@@ -714,11 +528,13 @@ jobs:
           git push \
             origin \
             "${{ inputs.sync_branch }}" \
-            --force
+            --force-with-lease
 
-      # ---------------------------------------------------------
-      # 18. Create Pull Request
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 15. Create / update Pull Request
+      # =========================================================
+
       - name: Create Pull Request
         if: env.CHANGES_EXIST == 'true'
         shell: bash
@@ -727,15 +543,11 @@ jobs:
 
           cd target-repo
 
-          BASE_DESCRIPTION="${{ inputs.pr_description }}"
-
-          FULL_DESCRIPTION="${BASE_DESCRIPTION}
+          PR_BODY="${{ inputs.pr_description }}
 
           ---
 
-          $(cat ../conflict-description.txt)
-
-          ---
+          ## Synchronization
 
           **Source repository:** ${SOURCE_REPO}
 
@@ -747,71 +559,173 @@ jobs:
 
           **Synchronization branch:** ${{ inputs.sync_branch }}
 
-          This PR was created automatically by the Phase 1 → Phase 2 synchronization workflow.
+          **Synchronization baseline:** ${BASELINE_SHA}
+
+          ---
+
+          ## Conflict handling
+
+          This PR was created from the synchronization baseline.
+
+          If the target branch and source changes modified the same lines/files since the baseline, GitHub will show its native **Resolve conflicts** option.
+
+          Conflicts must be resolved manually by the developer.
+
+          The workflow does not automatically resolve or merge conflicts.
+
+          ---
+
+          **Protected directories:** .github, .stratus
           "
 
-          EXISTING_PR=$(gh pr list \
-            --repo "${TARGET_REPO}" \
-            --head "${{ inputs.sync_branch }}" \
-            --base "${{ inputs.target_branch }}" \
-            --state open \
-            --json number \
-            --jq '.[0].number' || true)
+          EXISTING_PR=$(
+            gh pr list \
+              --repo "${TARGET_REPO}" \
+              --head "${{ inputs.sync_branch }}" \
+              --base "${{ inputs.target_branch }}" \
+              --state open \
+              --json number \
+              --jq '.[0].number' \
+              || true
+          )
 
-          if [[ -n "$EXISTING_PR" ]]; then
+          if [[ -n "${EXISTING_PR}" ]]; then
 
             echo "Existing PR found: #${EXISTING_PR}"
 
-            gh pr edit "$EXISTING_PR" \
+            gh pr edit \
+              "${EXISTING_PR}" \
               --repo "${TARGET_REPO}" \
               --title "${{ inputs.pr_title }}" \
-              --body "$FULL_DESCRIPTION"
+              --body "${PR_BODY}"
 
           else
 
-            PR_URL=$(gh pr create \
-              --repo "${TARGET_REPO}" \
-              --base "${{ inputs.target_branch }}" \
-              --head "${{ inputs.sync_branch }}" \
-              --title "${{ inputs.pr_title }}" \
-              --body "$FULL_DESCRIPTION")
+            echo "Creating new Pull Request..."
 
-            echo "Pull Request created:"
-            echo "$PR_URL"
+            PR_URL=$(
+              gh pr create \
+                --repo "${TARGET_REPO}" \
+                --base "${{ inputs.target_branch }}" \
+                --head "${{ inputs.sync_branch }}" \
+                --title "${{ inputs.pr_title }}" \
+                --body "${PR_BODY}"
+            )
+
+            echo ""
+            echo "=========================================="
+            echo "PULL REQUEST"
+            echo "=========================================="
+            echo "${PR_URL}"
 
           fi
 
-      # ---------------------------------------------------------
-      # 19. Summary
-      # ---------------------------------------------------------
-      - name: Summary
+
+      # =========================================================
+      # 16. Check GitHub native mergeability
+      #
+      # This does NOT modify the PR.
+      # It only reports what GitHub calculated.
+      # =========================================================
+
+      - name: Check Pull Request mergeability
+        if: env.CHANGES_EXIST == 'true'
+        shell: bash
+        run: |
+          set -e
+
+          echo "Waiting for GitHub to calculate mergeability..."
+
+          sleep 10
+
+          PR_NUMBER=$(
+            gh pr list \
+              --repo "${TARGET_REPO}" \
+              --head "${{ inputs.sync_branch }}" \
+              --base "${{ inputs.target_branch }}" \
+              --state open \
+              --json number \
+              --jq '.[0].number'
+          )
+
+          echo "PR #${PR_NUMBER}"
+
+          MERGEABLE=$(
+            gh pr view \
+              "${PR_NUMBER}" \
+              --repo "${TARGET_REPO}" \
+              --json mergeable \
+              --jq '.mergeable'
+          )
+
+          echo ""
+          echo "GitHub mergeability:"
+          echo "${MERGEABLE}"
+
+          if [[ "${MERGEABLE}" == "CONFLICTING" || "${MERGEABLE}" == "false" ]]; then
+
+            echo ""
+            echo "=========================================="
+            echo "CONFLICT DETECTED BY GITHUB"
+            echo "=========================================="
+
+            echo ""
+            echo "Open the PR and use GitHub's:"
+            echo ""
+            echo "Resolve conflicts"
+            echo ""
+
+          elif [[ "${MERGEABLE}" == "MERGEABLE" || "${MERGEABLE}" == "true" ]]; then
+
+            echo ""
+            echo "PR is currently mergeable."
+
+          else
+
+            echo ""
+            echo "GitHub is still calculating mergeability."
+
+          fi
+
+
+      # =========================================================
+      # 17. Final summary
+      # =========================================================
+
+      - name: Final summary
         if: always()
         shell: bash
         run: |
-          echo "=========================================="
-          echo "Phase 1 → Phase 2 Synchronization"
-          echo "=========================================="
           echo ""
+          echo "=========================================="
+          echo "PHASE 1 → PHASE 2"
+          echo "=========================================="
+
           echo "Source : ${SOURCE_REPO}"
           echo "Target : ${TARGET_REPO}"
-          echo "Branch : ${{ inputs.sync_branch }}"
+          echo "Source branch : ${{ inputs.source_branch }}"
+          echo "Target branch : ${{ inputs.target_branch }}"
+          echo "Sync branch : ${{ inputs.sync_branch }}"
+
           echo ""
+          echo "No automatic merge was performed."
 
-          if [[ "${CONFLICTS_FOUND:-false}" == "true" ]]; then
-            echo "STATUS: CONFLICTS DETECTED"
-            echo ""
-            echo "PR was created."
-            echo "Developer must manually resolve conflicts."
-          else
-            echo "STATUS: SYNCHRONIZATION COMPLETED"
-          fi
+          echo ""
+          echo "If GitHub reports conflicts:"
+          echo "Developer resolves them using GitHub's Resolve conflicts button."
 
-      # ---------------------------------------------------------
-      # 20. Cleanup credentials
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 18. Cleanup token
+      # =========================================================
+
       - name: Cleanup credentials
         if: always()
         shell: bash
         run: |
           rm -f "$HOME/.git-credentials"
-          git config --global --unset credential.helper || true
+
+          git config \
+            --global \
+            --unset credential.helper \
+            || true
